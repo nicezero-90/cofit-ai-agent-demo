@@ -84,3 +84,43 @@ async def test_resolve_all_remote_fail():
         resolved = await resolve_skill_configs(skills, client_id=351)
 
     assert resolved == []
+
+
+from src.orchestrator import run_auto
+
+
+@pytest.mark.asyncio
+async def test_run_auto_builds_orchestrator_and_runs():
+    """run_auto 應建立 orchestrator + sub_agents 並執行。"""
+    resolved_skills = [
+        {
+            "skill_key": "lab_report",
+            "description": "分析檢驗報告",
+            "config": {
+                "system_prompt": "你是檢驗報告專家",
+                "model_config": {"model": "gemini-flash-lite"},
+                "tools": [],
+                "rag_files": [],
+            },
+            "context_data": {"lab": "data"},
+        },
+    ]
+
+    mock_event = MagicMock()
+    mock_event.content = MagicMock()
+    mock_event.content.parts = [MagicMock(text="檢驗結果正常")]
+
+    async def mock_run_async(**kwargs):
+        yield mock_event
+
+    with patch("src.orchestrator.Runner") as MockRunner:
+        MockRunner.return_value.run_async = mock_run_async
+        result = await run_auto(
+            resolved_skills=resolved_skills,
+            system_prompt="你是診所AI大腦",
+            model_config={"model": "gemini-pro"},
+            skill_key="clinic_brain_v2",
+            message="分析檢驗報告",
+        )
+
+    assert "檢驗結果正常" in result
