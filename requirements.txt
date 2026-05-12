@@ -1,0 +1,4 @@
+google-adk>=1.31.0
+google-cloud-aiplatform>=1.60.0
+uvicorn>=0.30.0
+python-json-logger
