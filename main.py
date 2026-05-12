@@ -210,6 +210,57 @@ async def run_brain_v2(
                                 "description": "SSE streaming 模式（預設 false）",
                                 "default": False,
                             },
+                            "skills": {
+                                "type": "array",
+                                "description": "Sub-agent 清單（選填，v2）。不傳則走 v1 單一 agent",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["skill_key", "description"],
+                                    "properties": {
+                                        "skill_key": {
+                                            "type": "string",
+                                            "description": "對應 BE /v5/ai_skills/:key",
+                                            "example": "lab_report",
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "給 orchestrator 判斷路由用",
+                                            "example": "分析檢驗報告數據，判斷異常值並給建議",
+                                        },
+                                        "system_prompt": {
+                                            "type": "string",
+                                            "description": "Inline 模式：skill 的 system prompt（選填，沒給就打 BE 拿）",
+                                        },
+                                        "model_config": {
+                                            "type": "object",
+                                            "description": "Inline 模式：model 設定（選填）",
+                                        },
+                                        "context_data": {
+                                            "type": "object",
+                                            "description": "Inline 模式：context 資料（選填）",
+                                        },
+                                        "tools": {
+                                            "type": "array",
+                                            "description": "Inline 模式：tools（選填）",
+                                            "items": {"type": "string"},
+                                        },
+                                        "rag_files": {
+                                            "type": "array",
+                                            "description": "Inline 模式：知識庫檔案（選填）",
+                                        },
+                                    },
+                                },
+                                "example": [
+                                    {"skill_key": "lab_report", "description": "分析檢驗報告數據"},
+                                    {"skill_key": "body_measurement", "description": "分析體組成變化趨勢"},
+                                ],
+                            },
+                            "orchestration_mode": {
+                                "type": "string",
+                                "description": "編排模式（選填，預設 auto）",
+                                "enum": ["auto", "parallel", "sequential"],
+                                "default": "auto",
+                            },
                         },
                     },
                 }
