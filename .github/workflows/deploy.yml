@@ -1,0 +1,150 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: cofit-ai-agent-demo-496007
+  SERVICE_NAME: cofit-ai-agent-demo
+  REGION: asia-east1
+  AR_IMAGE: asia-east1-docker.pkg.dev/cofit-ai-agent-demo-496007/cofit-ai-agent-demo/app
+
+jobs:
+  deploy:
+    name: Deploy to Cloud Run
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker asia-east1-docker.pkg.dev --quiet
+
+      - name: Ensure Artifact Registry exists
+        run: |
+          gcloud artifacts repositories describe cofit-ai-agent-demo \
+            --project=$PROJECT_ID \
+            --location=$REGION 2>/dev/null || \
+          gcloud artifacts repositories create cofit-ai-agent-demo \
+            --project=$PROJECT_ID \
+            --location=$REGION \
+            --repository-format=docker \
+            --description="AI Brain POC Docker images"
+
+      - name: Generate version tag
+        id: version
+        run: |
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          COMMIT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          VERSION_TAG="${TIMESTAMP}-${COMMIT_SHA}"
+          echo "VERSION_TAG=${VERSION_TAG}" >> $GITHUB_OUTPUT
+          echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_OUTPUT
+          echo "COMMIT_SHA=${COMMIT_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        id: build
+        run: |
+          IMAGE="${AR_IMAGE}:${{ steps.version.outputs.COMMIT_SHA }}"
+          IMAGE_LATEST="${AR_IMAGE}:latest"
+
+          docker build \
+            --cache-from "$IMAGE_LATEST" \
+            -t "$IMAGE" \
+            -t "$IMAGE_LATEST" \
+            .
+
+          docker push "$IMAGE"
+          docker push "$IMAGE_LATEST"
+
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        run: |
+          REVISION_SUFFIX="v${{ steps.version.outputs.TIMESTAMP }}-${{ steps.version.outputs.COMMIT_SHA }}"
+
+          gcloud run deploy $SERVICE_NAME \
+            --project $PROJECT_ID \
+            --image ${{ steps.build.outputs.image }} \
+            --platform managed \
+            --region $REGION \
+            --allow-unauthenticated \
+            --memory 1Gi \
+            --cpu 1 \
+            --timeout 300 \
+            --max-instances 10 \
+            --min-instances 0 \
+            --concurrency 80 \
+            --port 8080 \
+            --execution-environment gen2 \
+            --revision-suffix="$REVISION_SUFFIX" \
+            --update-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_LOCATION=global,GIT_COMMIT=${{ steps.version.outputs.COMMIT_SHA }},VERSION=${{ steps.version.outputs.VERSION_TAG }}"
+
+          gcloud run services update-traffic $SERVICE_NAME \
+            --project=$PROJECT_ID \
+            --region=$REGION \
+            --to-latest
+
+          SERVICE_URL=$(gcloud run services describe $SERVICE_NAME \
+            --project=$PROJECT_ID \
+            --region=$REGION \
+            --format="value(status.url)")
+
+          echo "url=$SERVICE_URL" >> $GITHUB_OUTPUT
+
+      - name: Health check
+        run: |
+          SERVICE_URL="${{ steps.deploy.outputs.url }}"
+          echo "Testing: $SERVICE_URL/health"
+          sleep 10
+
+          MAX_RETRIES=5
+          RETRY_COUNT=0
+          SUCCESS=false
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$SERVICE_URL/health" || echo "000")
+            if [ "$HTTP_CODE" = "200" ]; then
+              SUCCESS=true
+              echo "Service is healthy!"
+              break
+            fi
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            echo "Not ready (attempt $RETRY_COUNT/$MAX_RETRIES), retrying in 5s..."
+            sleep 5
+          done
+
+          if [ "$SUCCESS" = false ]; then
+            echo "Health check failed after $MAX_RETRIES attempts"
+            exit 1
+          fi
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "## Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Service**: $SERVICE_NAME" >> $GITHUB_STEP_SUMMARY
+          echo "**Project**: $PROJECT_ID" >> $GITHUB_STEP_SUMMARY
+          echo "**Version**: \`${{ steps.version.outputs.VERSION_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**URL**: ${{ steps.deploy.outputs.url }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Endpoints" >> $GITHUB_STEP_SUMMARY
+          echo "- Health: ${{ steps.deploy.outputs.url }}/health" >> $GITHUB_STEP_SUMMARY
+          echo "- AI Brain: ${{ steps.deploy.outputs.url }}/ai-brain" >> $GITHUB_STEP_SUMMARY
+          echo "- Docs: ${{ steps.deploy.outputs.url }}/docs" >> $GITHUB_STEP_SUMMARY
