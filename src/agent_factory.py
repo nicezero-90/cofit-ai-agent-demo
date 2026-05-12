@@ -209,3 +209,43 @@ def create_agent(
         f"full_context_files={len(knowledge_parts)}, tools={len(tools)}"
     )
     return agent, knowledge_parts
+
+
+def create_orchestrator(
+    system_prompt: str,
+    model_config: dict,
+    sub_agents: list[Agent],
+    skill_key: str,
+) -> Agent:
+    """建立 orchestrator Agent，掛載 sub_agents 做編排。
+
+    Args:
+        system_prompt: orchestrator 的 system prompt（只管路由，不管分析）
+        model_config: orchestrator 的 model 設定（通常用 gemini-pro）
+        sub_agents: 已建好的 skill Agent 清單
+        skill_key: 頂層 skill key（用於命名）
+
+    Returns:
+        orchestrator Agent
+    """
+    if not sub_agents:
+        raise ValueError("create_orchestrator requires at least one sub_agent")
+
+    raw_model = model_config.get("model", DEFAULT_MODEL)
+    model = resolve_model(raw_model)
+
+    instruction = lambda _ctx, _t=system_prompt: _t
+
+    agent = Agent(
+        name=f"orchestrator_{skill_key.replace('-', '_')}",
+        model=model,
+        instruction=instruction,
+        sub_agents=sub_agents,
+        generate_content_config=types.GenerateContentConfig(),
+    )
+
+    logger.info(
+        f"Created orchestrator: skill_key={skill_key}, model={model}, "
+        f"sub_agents={[a.name for a in sub_agents]}"
+    )
+    return agent
