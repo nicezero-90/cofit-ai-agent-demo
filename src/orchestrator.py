@@ -191,3 +191,86 @@ async def _stream_runner(runner, user_id: str, session_id: str, user_content):
         text = _extract_text_from_event(event)
         if text:
             yield text
+
+
+async def _run_single_agent(
+    config: dict,
+    context_data: dict,
+    skill_key: str,
+    message: str,
+) -> tuple[str, str]:
+    """跑單一 skill agent，回傳 (skill_key, result)。"""
+    try:
+        agent, knowledge_parts = create_agent(
+            config=config, context_data=context_data, skill_key=skill_key,
+        )
+        session_service = InMemorySessionService()
+        app_name = f"skill_{skill_key}"
+        user_id = "be_caller"
+        session = await session_service.create_session(app_name=app_name, user_id=user_id)
+        runner = Runner(app_name=app_name, agent=agent, session_service=session_service)
+
+        parts = knowledge_parts + [types.Part(text=message)]
+        user_content = types.Content(role="user", parts=parts)
+
+        result = await _collect_runner(runner, user_id, session.id, user_content)
+        return skill_key, result
+    except Exception as e:
+        logger.warning(f"Sub-agent '{skill_key}' failed: {e}")
+        return skill_key, f"[錯誤] {skill_key} 執行失敗: {e}"
+
+
+async def run_parallel(
+    resolved_skills: list[dict],
+    system_prompt: str,
+    model_config: dict,
+    skill_key: str,
+    message: str,
+    stream: bool = False,
+):
+    """parallel 模式：同時跑所有 sub-agent，orchestrator 彙整。"""
+    # 1. 並行跑所有 sub-agent
+    tasks = [
+        _run_single_agent(
+            config=s["config"],
+            context_data=s["context_data"],
+            skill_key=s["skill_key"],
+            message=message,
+        )
+        for s in resolved_skills
+    ]
+    results = await asyncio.gather(*tasks)
+
+    # 2. 組 summary prompt
+    summary_parts = []
+    for sk, result_text in results:
+        desc = next((s["description"] for s in resolved_skills if s["skill_key"] == sk), sk)
+        summary_parts.append(f"### {desc}（{sk}）\n{result_text}")
+    summary = "\n\n".join(summary_parts)
+
+    summarize_prompt = (
+        f"以下是各專家的分析結果，請彙整成一份完整報告：\n\n{summary}"
+    )
+
+    # 3. Orchestrator 彙整（不需要 sub_agents，直接用單一 agent）
+    summarize_config = {
+        "system_prompt": system_prompt,
+        "model_config": model_config,
+        "tools": [],
+        "rag_files": [],
+    }
+    summarizer, _ = create_agent(
+        config=summarize_config, context_data={}, skill_key=f"{skill_key}_summarizer",
+    )
+    session_service = InMemorySessionService()
+    app_name = f"brain_{skill_key}_summarize"
+    user_id = "be_caller"
+    session = await session_service.create_session(app_name=app_name, user_id=user_id)
+    runner = Runner(app_name=app_name, agent=summarizer, session_service=session_service)
+
+    user_content = types.Content(role="user", parts=[types.Part(text=summarize_prompt)])
+
+    if stream:
+        return _stream_runner(runner, user_id, session.id, user_content)
+    else:
+        return await _collect_runner(runner, user_id, session.id, user_content)

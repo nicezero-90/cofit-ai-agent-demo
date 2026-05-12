@@ -124,3 +124,55 @@ async def test_run_auto_builds_orchestrator_and_runs():
         )
 
     assert "檢驗結果正常" in result
+
+
+from src.orchestrator import run_parallel
+
+
+@pytest.mark.asyncio
+async def test_run_parallel_gathers_and_summarizes():
+    """parallel 應同時跑所有 skill，最後 orchestrator 彙整。"""
+    resolved_skills = [
+        {
+            "skill_key": "lab_report",
+            "description": "檢驗",
+            "config": {
+                "system_prompt": "你是檢驗專家",
+                "model_config": {"model": "gemini-flash-lite"},
+                "tools": [], "rag_files": [],
+            },
+            "context_data": {"lab": "data"},
+        },
+        {
+            "skill_key": "body_measurement",
+            "description": "體組成",
+            "config": {
+                "system_prompt": "你是體組成專家",
+                "model_config": {"model": "gemini-flash-lite"},
+                "tools": [], "rag_files": [],
+            },
+            "context_data": {"body": "data"},
+        },
+    ]
+
+    call_count = 0
+
+    async def mock_run_async(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        mock_event = MagicMock()
+        mock_event.content = MagicMock()
+        mock_event.content.parts = [MagicMock(text=f"結果{call_count}")]
+        yield mock_event
+
+    with patch("src.orchestrator.Runner") as MockRunner:
+        MockRunner.return_value.run_async = mock_run_async
+        result = await run_parallel(
+            resolved_skills=resolved_skills,
+            system_prompt="你是診所AI大腦",
+            model_config={"model": "gemini-pro"},
+            skill_key="clinic_brain_v2",
+            message="全面分析",
+        )
+
+    assert result  # 有回傳結果
