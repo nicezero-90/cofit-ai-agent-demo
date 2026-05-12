@@ -176,3 +176,57 @@ async def test_run_parallel_gathers_and_summarizes():
         )
 
     assert result  # 有回傳結果
+
+
+from src.orchestrator import run_sequential
+
+
+@pytest.mark.asyncio
+async def test_run_sequential_chains_context():
+    """sequential 應依序執行，前一步結果傳給下一步。"""
+    resolved_skills = [
+        {
+            "skill_key": "lab_report",
+            "description": "檢驗",
+            "config": {
+                "system_prompt": "你是檢驗專家",
+                "model_config": {"model": "gemini-flash-lite"},
+                "tools": [], "rag_files": [],
+            },
+            "context_data": {},
+        },
+        {
+            "skill_key": "orders",
+            "description": "訂單",
+            "config": {
+                "system_prompt": "你是訂單專家",
+                "model_config": {"model": "gemini-flash-lite"},
+                "tools": [], "rag_files": [],
+            },
+            "context_data": {},
+        },
+    ]
+
+    step = 0
+
+    async def mock_run_async(**kwargs):
+        nonlocal step
+        step += 1
+        mock_event = MagicMock()
+        mock_event.content = MagicMock()
+        mock_event.content.parts = [MagicMock(text=f"步驟{step}結果")]
+        yield mock_event
+
+    with patch("src.orchestrator.Runner") as MockRunner:
+        MockRunner.return_value.run_async = mock_run_async
+        result = await run_sequential(
+            resolved_skills=resolved_skills,
+            system_prompt="你是診所AI大腦",
+            model_config={"model": "gemini-pro"},
+            skill_key="clinic_brain_v2",
+            message="先看報告再建議產品",
+        )
+
+    assert result  # 有回傳結果
+    # 3 次呼叫：2 sub-agent + 1 orchestrator 彙整
+    assert step == 3

@@ -274,3 +274,64 @@ async def run_parallel(
         return _stream_runner(runner, user_id, session.id, user_content)
     else:
         return await _collect_runner(runner, user_id, session.id, user_content)
+
+
+async def run_sequential(
+    resolved_skills: list[dict],
+    system_prompt: str,
+    model_config: dict,
+    skill_key: str,
+    message: str,
+    stream: bool = False,
+):
+    """sequential 模式：依序執行，前一步結果串接到下一步。"""
+    accumulated_context = ""
+
+    for i, skill in enumerate(resolved_skills):
+        # 組合 message：原始問題 + 前面步驟的結果
+        if accumulated_context:
+            step_message = (
+                f"原始問題：{message}\n\n"
+                f"前面步驟的分析結果：\n{accumulated_context}\n\n"
+                f"請根據以上資訊繼續分析。"
+            )
+        else:
+            step_message = message
+
+        sk, result_text = await _run_single_agent(
+            config=skill["config"],
+            context_data=skill["context_data"],
+            skill_key=skill["skill_key"],
+            message=step_message,
+        )
+
+        desc = skill.get("description", sk)
+        accumulated_context += f"\n### {desc}（{sk}）\n{result_text}\n"
+
+    # 最後 orchestrator 彙整
+    summarize_prompt = (
+        f"原始問題：{message}\n\n"
+        f"以下是各專家依序分析的結果，請彙整成一份完整報告：\n{accumulated_context}"
+    )
+
+    summarize_config = {
+        "system_prompt": system_prompt,
+        "model_config": model_config,
+        "tools": [],
+        "rag_files": [],
+    }
+    summarizer, _ = create_agent(
+        config=summarize_config, context_data={}, skill_key=f"{skill_key}_summarizer",
+    )
+    session_service = InMemorySessionService()
+    app_name = f"brain_{skill_key}_summarize"
+    user_id = "be_caller"
+    session = await session_service.create_session(app_name=app_name, user_id=user_id)
+    runner = Runner(app_name=app_name, agent=summarizer, session_service=session_service)
+
+    user_content = types.Content(role="user", parts=[types.Part(text=summarize_prompt)])
+
+    if stream:
+        return _stream_runner(runner, user_id, session.id, user_content)
+    else:
+        return await _collect_runner(runner, user_id, session.id, user_content)
