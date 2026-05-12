@@ -14,6 +14,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
 
 from src.agent_factory import create_agent
+from src.orchestrator import resolve_skill_configs, run_auto, run_parallel, run_sequential
 
 # ── Logging ──────────────────────────────────────────────
 logger = logging.getLogger(__name__)
@@ -60,6 +61,44 @@ async def health():
 
 
 # ── AI Brain Endpoint ────────────────────────────────────
+async def run_brain_v2(
+    body: dict,
+    skill_key: str,
+    system_prompt: str,
+    model_config: dict,
+    context_data: dict,
+    message: str,
+    skills: list[dict],
+    stream: bool,
+):
+    """v2 路徑：orchestrator + sub-agents。"""
+    client_id = None
+    if isinstance(context_data, dict):
+        client_id = context_data.get("client_id")
+
+    resolved = await resolve_skill_configs(skills, client_id=client_id)
+    if not resolved:
+        raise ValueError("Failed to fetch skill configs")
+
+    mode = body.get("orchestration_mode", "auto")
+
+    if mode == "parallel":
+        run_fn = run_parallel
+    elif mode == "sequential":
+        run_fn = run_sequential
+    else:
+        run_fn = run_auto
+
+    return await run_fn(
+        resolved_skills=resolved,
+        system_prompt=system_prompt,
+        model_config=model_config,
+        skill_key=skill_key,
+        message=message,
+        stream=stream,
+    )
+
+
 @app.post(
     "/ai-brain",
     tags=["AI Brain"],
@@ -237,6 +276,38 @@ async def ai_brain(request: Request):
             content={"error": "key, system_prompt, model_config, and context_data are required"},
         )
 
+    # ── v2：有 skills → 走 orchestrator ──
+    skills = body.get("skills") or []
+    if skills:
+        if stream:
+            async def v2_stream():
+                try:
+                    result = await run_brain_v2(
+                        body=body, skill_key=skill_key, system_prompt=system_prompt,
+                        model_config=model_config, context_data=context_data,
+                        message=message, skills=skills, stream=True,
+                    )
+                    async for text in result:
+                        yield f"data: {json.dumps({'text': text}, ensure_ascii=False)}\n\n"
+                    yield "data: [DONE]\n\n"
+                except Exception as e:
+                    logger.exception(f"Error in /ai-brain v2 streaming: {e}")
+                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                    yield "data: [DONE]\n\n"
+            return StreamingResponse(v2_stream(), media_type="text/event-stream")
+        else:
+            try:
+                result = await run_brain_v2(
+                    body=body, skill_key=skill_key, system_prompt=system_prompt,
+                    model_config=model_config, context_data=context_data,
+                    message=message, skills=skills, stream=False,
+                )
+                return JSONResponse(status_code=200, content={"result": result, "skill_key": skill_key})
+            except Exception as e:
+                logger.exception(f"Error in /ai-brain v2: {e}")
+                return JSONResponse(status_code=500, content={"error": "Agent execution failed"})
+
+    # ── v1：原有邏輯（無 skills）──
     # 直接用 BE 送來的 config 建立 agent
     config = {
         "system_prompt": system_prompt,
