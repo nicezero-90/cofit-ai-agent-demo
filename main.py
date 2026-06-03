@@ -14,7 +14,7 @@ from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
 
 from src.agent_factory import create_agent
-from src.orchestrator import resolve_skill_configs, run_auto, run_parallel, run_sequential
+from src.orchestrator import resolve_skill_configs, run_auto, run_parallel, run_sequential, run_graph
 
 # ── Logging ──────────────────────────────────────────────
 logger = logging.getLogger(__name__)
@@ -435,6 +435,206 @@ async def ai_brain(request: Request):
         return JSONResponse(
             status_code=200,
             content={"result": result, "skill_key": skill_key},
+        )
+
+
+@app.post(
+    "/v1/agents/{agent_key}/run",
+    tags=["AI Agent"],
+    summary="AI Agent 執行（multi-skill 編排）",
+    description=(
+        "根據 BE 設定的 agent manifest，執行多 skill 編排流程。\n\n"
+        "**兩種模式：**\n"
+        "- `auto`: 把 agent + 所有 skill 丟給 coordinator LLM，由它自行決定呼叫哪些 skill\n"
+        "- `graph`: 照 edges 定義的有向圖執行，同層無相依者平行執行\n\n"
+        "**`blocked_nodes` 非空時回傳 422**（agent 設定有問題，請通知後端）"
+    ),
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["client_id"],
+                        "properties": {
+                            "client_id": {
+                                "type": "integer",
+                                "description": "用戶 ID",
+                                "example": 351,
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": "使用者輸入（選填，預設「請根據資料產出分析報告」）",
+                                "example": "請幫我產出這位病人的完整分析報告",
+                            },
+                            "stream": {
+                                "type": "boolean",
+                                "description": "SSE streaming 模式（預設 false）",
+                                "default": False,
+                            },
+                        },
+                    },
+                    "example": {
+                        "client_id": 351,
+                        "message": "請幫我產出完整分析報告",
+                        "stream": False,
+                    },
+                }
+            },
+        },
+        "responses": {
+            "200": {
+                "description": "執行成功",
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "result": "根據病人資料...",
+                            "agent_key": "nutrition-agent",
+                            "mode": "graph",
+                        },
+                    },
+                    "text/event-stream": {
+                        "schema": {"type": "string"},
+                        "example": 'data: {"text": "根據病人資料..."}\ndata: [DONE]\n',
+                    },
+                },
+            },
+            "400": {"description": "缺少 client_id"},
+            "404": {"description": "agent_key 不存在"},
+            "422": {
+                "description": "Agent 有 blocked_nodes（skill 設定有問題）",
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "error": "Agent has blocked nodes",
+                            "blocked_nodes": [{"node_id": "n1", "reason": "inactive"}],
+                        }
+                    }
+                },
+            },
+            "502": {"description": "上游 BE API 錯誤"},
+            "500": {"description": "Agent 執行失敗"},
+        },
+    },
+)
+async def run_agent(agent_key: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+
+    client_id = body.get("client_id")
+    if client_id is None:
+        return JSONResponse(status_code=400, content={"error": "client_id is required"})
+    client_id = int(client_id)
+
+    message = body.get("message") or "請根據資料產出分析報告"
+    stream = body.get("stream", False)
+
+    # 1. 取 manifest（編排結構）
+    from src.cofit_api_client import CofitApiClient
+    from src.constants import COFIT_API_URL, COFIT_TOKEN
+    import requests as _requests
+
+    api = CofitApiClient(base_url=COFIT_API_URL, token=COFIT_TOKEN)
+    loop = asyncio.get_event_loop()
+    try:
+        manifest = await loop.run_in_executor(None, api.get_ai_agent_manifest, agent_key)
+    except _requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 500
+        if status == 404:
+            return JSONResponse(status_code=404, content={"error": f"Agent '{agent_key}' not found"})
+        logger.error("get_ai_agent_manifest error: %s", e)
+        return JSONResponse(status_code=502, content={"error": "Upstream API error"})
+    except Exception as e:
+        logger.error("get_ai_agent_manifest error: %s", e)
+        return JSONResponse(status_code=502, content={"error": "Upstream API error"})
+
+    # 2. blocked_nodes 非空 → 停止
+    blocked = manifest.get("blocked_nodes") or []
+    if blocked:
+        logger.warning("Agent '%s' has blocked_nodes: %s", agent_key, blocked)
+        return JSONResponse(
+            status_code=422,
+            content={"error": "Agent has blocked nodes", "blocked_nodes": blocked},
+        )
+
+    # 3. 批次取 skill 資料
+    skill_keys = list({n["skill_key"] for n in manifest.get("nodes", [])})
+    try:
+        context_resp = await loop.run_in_executor(
+            None, api.get_ai_agent_context_data, agent_key, client_id, skill_keys
+        )
+    except Exception as e:
+        logger.error("get_ai_agent_context_data error: %s", e)
+        return JSONResponse(status_code=502, content={"error": "Failed to fetch context data"})
+
+    skills_data: dict = context_resp.get("skills", {})
+    errors: dict = context_resp.get("errors", {})
+    if errors:
+        logger.warning("Agent '%s' context_data errors: %s", agent_key, errors)
+
+    # 4. 執行
+    mode = manifest.get("orchestration_mode", "auto")
+
+    try:
+        if mode == "graph":
+            result_or_gen = await run_graph(
+                manifest=manifest,
+                skills_data=skills_data,
+                message=message,
+                stream=stream,
+            )
+        else:  # auto
+            # 把 manifest + skills_data 轉成 resolved_skills 格式
+            seen_skills: set[str] = set()
+            resolved_skills = []
+            for node in manifest.get("nodes", []):
+                sk = node["skill_key"]
+                if sk in seen_skills:
+                    continue
+                seen_skills.add(sk)
+                sd = skills_data.get(sk, {})
+                resolved_skills.append({
+                    "skill_key": sk,
+                    "description": sd.get("description", sk),
+                    "config": {
+                        "system_prompt": sd.get("system_prompt", ""),
+                        "model_config": sd.get("model_config", {}),
+                        "tools": sd.get("tools", []),
+                        "rag_files": sd.get("rag_files", []),
+                        "rag_resource_name": sd.get("rag_resource_name"),
+                    },
+                    "context_data": sd.get("context_data", {}),
+                })
+            result_or_gen = await run_auto(
+                resolved_skills=resolved_skills,
+                system_prompt=manifest.get("system_prompt", ""),
+                model_config=manifest.get("model_config", {}),
+                skill_key=agent_key,
+                message=message,
+                stream=stream,
+            )
+    except Exception as e:
+        logger.exception("Agent '%s' execution failed: %s", agent_key, e)
+        return JSONResponse(status_code=500, content={"error": "Agent execution failed"})
+
+    if stream:
+        async def event_generator():
+            try:
+                async for text in result_or_gen:
+                    yield f"data: {json.dumps({'text': text}, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                logger.exception("Agent '%s' streaming error: %s", agent_key, e)
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                yield "data: [DONE]\n\n"
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+    else:
+        return JSONResponse(
+            status_code=200,
+            content={"result": result_or_gen, "agent_key": agent_key, "mode": mode},
         )
 
 

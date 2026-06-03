@@ -2,12 +2,14 @@
 
 負責：
 1. resolve_skill_configs: 解析 skills[]，inline 或打 BE
-2. run_auto / run_parallel / run_sequential: 三種編排模式（後續 Task 實作）
+2. run_auto / run_parallel / run_sequential: 三種編排模式
+3. run_graph: graph 模式（依 DAG edges 拓撲排序執行）
 """
 
 import asyncio
 import json
 import logging
+from collections import defaultdict, deque
 from typing import Any
 
 from google.adk.agents.run_config import RunConfig, StreamingMode
@@ -274,6 +276,119 @@ async def run_parallel(
         return _stream_runner(runner, user_id, session.id, user_content)
     else:
         return await _collect_runner(runner, user_id, session.id, user_content)
+
+
+def _topo_layers(node_ids: set[str], edges: list[dict]) -> list[list[str]]:
+    """Kahn's BFS — 回傳平行執行層（同層無相依，可平行；上層全完才跑下層）。"""
+    in_deg = {nid: 0 for nid in node_ids}
+    succ: dict[str, list[str]] = defaultdict(list)
+    for e in edges:
+        f, t = e["from"], e["to"]
+        if f in node_ids and t in node_ids:
+            succ[f].append(t)
+            in_deg[t] += 1
+    q = deque(nid for nid in node_ids if in_deg[nid] == 0)
+    layers: list[list[str]] = []
+    while q:
+        layer = list(q)
+        q.clear()
+        layers.append(layer)
+        for nid in layer:
+            for s in succ[nid]:
+                in_deg[s] -= 1
+                if in_deg[s] == 0:
+                    q.append(s)
+    return layers
+
+
+async def run_graph(
+    manifest: dict,
+    skills_data: dict,
+    message: str,
+    stream: bool = False,
+):
+    """graph 模式：依 manifest edges 拓撲排序，同層平行執行，下游得到上游輸出。
+
+    Args:
+        manifest: GET /v5/ai_agents/:key 的回傳（含 nodes / edges）
+        skills_data: GET /v5/ai_agents/:key/context_data 的 skills dict
+                     {skill_key: {system_prompt, model_config, tools, context_data, ...}}
+        message: 使用者輸入
+        stream: 是否 streaming（graph 模式 streaming = 最後輸出 stream）
+
+    Returns:
+        str（非 streaming）或 async generator（streaming，只 stream 最終輸出）
+    """
+    nodes: list[dict] = manifest.get("nodes", [])
+    edges: list[dict] = manifest.get("edges", [])
+    node_skill: dict[str, str] = {n["node_id"]: n["skill_key"] for n in nodes}
+    node_ids = set(node_skill.keys())
+    layers = _topo_layers(node_ids, edges)
+
+    # 前驅 map：nid → [上游 nid]
+    pred: dict[str, list[str]] = defaultdict(list)
+    for e in edges:
+        pred[e["to"]].append(e["from"])
+
+    # 後繼 map（用來找 leaf nodes）
+    has_successor = {e["from"] for e in edges if e["from"] in node_ids}
+    leaf_nodes = [nid for nid in node_ids if nid not in has_successor]
+
+    outputs: dict[str, str] = {}
+
+    for layer in layers:
+        tasks = []
+        for nid in layer:
+            sk = node_skill[nid]
+            skill_data = skills_data.get(sk, {})
+            config = {
+                "system_prompt": skill_data.get("system_prompt", ""),
+                "model_config": skill_data.get("model_config", {}),
+                "tools": skill_data.get("tools", []),
+                "rag_files": skill_data.get("rag_files", []),
+                "rag_resource_name": skill_data.get("rag_resource_name"),
+            }
+            context_data = skill_data.get("context_data", {})
+
+            # 組 input：原始訊息 + 上游輸出
+            upstream_texts = [outputs[p] for p in pred[nid] if p in outputs]
+            if upstream_texts:
+                node_input = (
+                    f"## 上游分析結果\n{chr(10).join(upstream_texts)}\n\n"
+                    f"## 使用者輸入\n{message}"
+                )
+            else:
+                node_input = message
+
+            tasks.append(
+                _run_single_agent(
+                    config=config,
+                    context_data=context_data,
+                    skill_key=sk,
+                    message=node_input,
+                )
+            )
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, result in enumerate(results):
+            nid = layer[i]
+            if isinstance(result, Exception):
+                logger.error("Graph: node %s failed: %s", nid, result)
+                outputs[nid] = f"[{nid} 執行失敗: {result}]"
+            else:
+                _, text = result
+                outputs[nid] = text
+
+    # 最終輸出：leaf nodes 的結果合併
+    final_parts = [outputs.get(nid, "") for nid in leaf_nodes if outputs.get(nid)]
+    final_text = "\n\n".join(final_parts) or "抱歉，我無法產生回覆，請再試一次。"
+
+    if stream:
+        async def _gen():
+            yield final_text
+        return _gen()
+    else:
+        return final_text
 
 
 async def run_sequential(

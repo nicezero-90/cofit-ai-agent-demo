@@ -1,6 +1,6 @@
-# 診所 AI 大腦 POC
+# Cofit AI Agent Demo
 
-從 `ai-skill-platform` 的 `/ai-brain` endpoint 獨立出來的 POC 專案，支援 A2A（Agent-to-Agent）多專家編排架構。
+從 `ai-skill-platform` 的 `/ai-brain` endpoint 獨立出來的專案，支援 A2A（Agent-to-Agent）多專家編排架構。
 
 ## 架構
 
@@ -28,7 +28,7 @@ BE ──POST /ai-brain──> FastAPI ──> Orchestrator（gemini-pro）
 ## 專案結構
 
 ```
-ai-brain-poc/
+cofit-ai-agent-demo/
 ├── main.py                    # FastAPI app + /ai-brain endpoint（v1/v2 路由）
 ├── src/
 │   ├── __init__.py

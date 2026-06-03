@@ -52,3 +52,33 @@ class CofitApiClient:
         data = response.json()
         context_data = data.pop("context_data", {})
         return data, context_data
+
+    def get_ai_agent_manifest(self, agent_key: str) -> Dict[str, Any]:
+        """取得 agent 編排結構（不含 client 資料）。
+
+        GET /v5/ai_agents/:key
+        回傳: {key, orchestration_mode, nodes, edges, blocked_nodes, system_prompt, ...}
+        """
+        url = f"{self.base_url}/v5/ai_agents/{agent_key}"
+        response = self.session.get(url, timeout=15)
+        response.raise_for_status()
+        return response.json()
+
+    def get_ai_agent_context_data(
+        self,
+        agent_key: str,
+        client_id: int,
+        skill_keys: Optional[list] = None,
+    ) -> Dict[str, Any]:
+        """批次取 skill config + client 資料。
+
+        GET /v5/ai_agents/:key/context_data?client_id=X&skill_keys[]=skill_b&...
+        回傳: {skills: {skill_key: {...}}, errors: {}}
+        """
+        url = f"{self.base_url}/v5/ai_agents/{agent_key}/context_data"
+        params: Dict[str, Any] = {"client_id": client_id}
+        if skill_keys:
+            params["skill_keys[]"] = skill_keys
+        response = self.session.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        return response.json()
