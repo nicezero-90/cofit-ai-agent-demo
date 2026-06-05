@@ -552,10 +552,10 @@ async def run_agent(agent_key: str, request: Request):
         logger.error("get_ai_agent_manifest error: %s", e)
         return JSONResponse(status_code=502, content={"error": "Upstream API error"})
 
-    # 2. blocked_nodes 非空 → 停止
-    blocked = manifest.get("blocked_nodes") or []
-    if blocked:
-        logger.warning("Agent '%s' has blocked_nodes: %s", agent_key, blocked)
+    # 2. usable == False → 停止
+    if not manifest.get("usable", True):
+        blocked = manifest.get("blocked_nodes") or []
+        logger.warning("Agent '%s' is not usable, blocked_nodes: %s", agent_key, blocked)
         return JSONResponse(
             status_code=422,
             content={"error": "Agent has blocked nodes", "blocked_nodes": blocked},
