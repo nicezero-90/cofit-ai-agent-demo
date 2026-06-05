@@ -65,6 +65,21 @@ def test_run_agent_usable_false_returns_422_without_context_call():
     mock_api.get_ai_agent_context_data.assert_not_called()
 
 
+def test_run_agent_usable_false_echoes_blocked_nodes():
+    """usable == False 時，blocked_nodes 應回傳在 response body 中。"""
+    blocked = [{"node_id": "n1", "reason": "inactive"}]
+    manifest = _manifest(usable=False, blocked=blocked)
+
+    mock_api = MagicMock()
+    mock_api.get_ai_agent_manifest.return_value = manifest
+
+    with patch("src.cofit_api_client.CofitApiClient", return_value=mock_api):
+        response = client.post("/v1/agents/nutrition-agent/run", json={"client_id": 351})
+
+    assert response.status_code == 422
+    assert response.json()["blocked_nodes"] == blocked
+
+
 def test_run_agent_usable_true_proceeds():
     """usable == True 且 auto 模式，正常走完並回 200。"""
     manifest = _manifest(usable=True, mode="auto")

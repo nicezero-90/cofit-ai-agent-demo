@@ -448,7 +448,7 @@ async def ai_brain(request: Request):
         "**兩種模式：**\n"
         "- `auto`: 把 agent + 所有 skill 丟給 coordinator LLM，由它自行決定呼叫哪些 skill\n"
         "- `graph`: 照 edges 定義的有向圖執行，同層無相依者平行執行\n\n"
-        "**`blocked_nodes` 非空時回傳 422**（agent 設定有問題，請通知後端）"
+        "**`usable == false` 時回傳 422**（agent 設定有問題，請通知後端）"
     ),
     openapi_extra={
         "requestBody": {
@@ -504,7 +504,7 @@ async def ai_brain(request: Request):
             "400": {"description": "缺少 client_id"},
             "404": {"description": "agent_key 不存在"},
             "422": {
-                "description": "Agent 有 blocked_nodes（skill 設定有問題）",
+                "description": "Agent usable == false（skill 設定有問題）",
                 "content": {
                     "application/json": {
                         "example": {
