@@ -44,9 +44,7 @@ def _context_data():
 def test_asyncio_import_exists():
     """main.py 必須有 import asyncio，否則 run_agent endpoint 執行時會 NameError。"""
     import main
-    import inspect
-    source = inspect.getsource(main)
-    assert "import asyncio" in source, "main.py 缺少 import asyncio"
+    assert hasattr(main, "asyncio"), "main.py missing 'import asyncio'"
 
 
 def test_run_agent_usable_false_returns_422_without_context_call():
@@ -126,3 +124,26 @@ def test_run_agent_auto_uses_node_name_as_description():
 
     # node["name"] == "每日飲食摘要"，不是 skill_key "daily_diet_summary"
     assert captured.get("descriptions") == ["每日飲食摘要"]
+
+
+def test_run_agent_null_model_config_does_not_crash():
+    """manifest 的 model_config 為 null 時，端點不應崩潰。"""
+    manifest = _manifest(usable=True, mode="auto")
+    manifest["model_config"] = None   # simulate null from BE
+
+    ctx = _context_data()
+    ctx["skills"]["daily_diet_summary"]["model_config"] = None  # skill level also null
+
+    mock_api = MagicMock()
+    mock_api.get_ai_agent_manifest.return_value = manifest
+    mock_api.get_ai_agent_context_data.return_value = ctx
+
+    with patch("src.cofit_api_client.CofitApiClient", return_value=mock_api):
+        with patch("main.run_auto", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = "ok"
+            response = client.post(
+                "/v1/agents/nutrition-agent/run",
+                json={"client_id": 351, "stream": False},
+            )
+
+    assert response.status_code == 200
