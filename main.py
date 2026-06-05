@@ -599,10 +599,10 @@ async def run_agent(agent_key: str, request: Request):
                 sd = skills_data.get(sk, {})
                 resolved_skills.append({
                     "skill_key": sk,
-                    "description": sd.get("description", sk),
+                    "description": node.get("name") or sk,
                     "config": {
                         "system_prompt": sd.get("system_prompt", ""),
-                        "model_config": sd.get("model_config", {}),
+                        "model_config": sd.get("model_config") or {},
                         "tools": sd.get("tools", []),
                         "rag_files": sd.get("rag_files", []),
                         "rag_resource_name": sd.get("rag_resource_name"),

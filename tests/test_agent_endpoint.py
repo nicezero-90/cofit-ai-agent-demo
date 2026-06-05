@@ -100,3 +100,29 @@ def test_run_agent_usable_true_proceeds():
     assert response.status_code == 200
     assert response.json()["result"] == "auto 結果"
     assert response.json()["mode"] == "auto"
+
+
+def test_run_agent_auto_uses_node_name_as_description():
+    """auto 模式組 resolved_skills 時，description 應來自 manifest node['name']，不是 skill_key。"""
+    manifest = _manifest(usable=True, mode="auto")
+    ctx = _context_data()
+
+    mock_api = MagicMock()
+    mock_api.get_ai_agent_manifest.return_value = manifest
+    mock_api.get_ai_agent_context_data.return_value = ctx
+
+    captured = {}
+
+    async def capture_run_auto(resolved_skills, **kwargs):
+        captured["descriptions"] = [s["description"] for s in resolved_skills]
+        return "ok"
+
+    with patch("src.cofit_api_client.CofitApiClient", return_value=mock_api):
+        with patch("main.run_auto", side_effect=capture_run_auto):
+            client.post(
+                "/v1/agents/nutrition-agent/run",
+                json={"client_id": 351, "stream": False},
+            )
+
+    # node["name"] == "每日飲食摘要"，不是 skill_key "daily_diet_summary"
+    assert captured.get("descriptions") == ["每日飲食摘要"]
