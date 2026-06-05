@@ -1,4 +1,5 @@
 # main.py — 診所 AI 大腦 POC
+import asyncio
 import json
 import logging
 import os
@@ -447,7 +448,7 @@ async def ai_brain(request: Request):
         "**兩種模式：**\n"
         "- `auto`: 把 agent + 所有 skill 丟給 coordinator LLM，由它自行決定呼叫哪些 skill\n"
         "- `graph`: 照 edges 定義的有向圖執行，同層無相依者平行執行\n\n"
-        "**`blocked_nodes` 非空時回傳 422**（agent 設定有問題，請通知後端）"
+        "**`usable == false` 時回傳 422**（agent 設定有問題，請通知後端）"
     ),
     openapi_extra={
         "requestBody": {
@@ -503,7 +504,7 @@ async def ai_brain(request: Request):
             "400": {"description": "缺少 client_id"},
             "404": {"description": "agent_key 不存在"},
             "422": {
-                "description": "Agent 有 blocked_nodes（skill 設定有問題）",
+                "description": "Agent usable == false（skill 設定有問題）",
                 "content": {
                     "application/json": {
                         "example": {
@@ -551,10 +552,10 @@ async def run_agent(agent_key: str, request: Request):
         logger.error("get_ai_agent_manifest error: %s", e)
         return JSONResponse(status_code=502, content={"error": "Upstream API error"})
 
-    # 2. blocked_nodes 非空 → 停止
-    blocked = manifest.get("blocked_nodes") or []
-    if blocked:
-        logger.warning("Agent '%s' has blocked_nodes: %s", agent_key, blocked)
+    # 2. usable == False → 停止
+    if not manifest.get("usable", True):
+        blocked = manifest.get("blocked_nodes") or []
+        logger.warning("Agent '%s' is not usable, blocked_nodes: %s", agent_key, blocked)
         return JSONResponse(
             status_code=422,
             content={"error": "Agent has blocked nodes", "blocked_nodes": blocked},
@@ -598,10 +599,10 @@ async def run_agent(agent_key: str, request: Request):
                 sd = skills_data.get(sk, {})
                 resolved_skills.append({
                     "skill_key": sk,
-                    "description": sd.get("description", sk),
+                    "description": node.get("name") or sk,
                     "config": {
                         "system_prompt": sd.get("system_prompt", ""),
-                        "model_config": sd.get("model_config", {}),
+                        "model_config": sd.get("model_config") or {},
                         "tools": sd.get("tools", []),
                         "rag_files": sd.get("rag_files", []),
                         "rag_resource_name": sd.get("rag_resource_name"),
@@ -611,7 +612,7 @@ async def run_agent(agent_key: str, request: Request):
             result_or_gen = await run_auto(
                 resolved_skills=resolved_skills,
                 system_prompt=manifest.get("system_prompt", ""),
-                model_config=manifest.get("model_config", {}),
+                model_config=manifest.get("model_config") or {},
                 skill_key=agent_key,
                 message=message,
                 stream=stream,
