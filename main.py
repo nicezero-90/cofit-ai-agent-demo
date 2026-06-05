@@ -1,4 +1,5 @@
 # main.py — 診所 AI 大腦 POC
+import asyncio
 import json
 import logging
 import os
