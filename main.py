@@ -561,8 +561,18 @@ async def run_agent(agent_key: str, request: Request):
             content={"error": "Agent has blocked nodes", "blocked_nodes": blocked},
         )
 
-    # 3. 批次取 skill 資料
-    skill_keys = list({n["skill_key"] for n in manifest.get("nodes", [])})
+    # 3. 批次取 skill 資料（connected: false 為 orphan，預設 True 保持向後相容）
+    mode = manifest.get("orchestration_mode", "auto")
+    connected_nodes = [n for n in manifest.get("nodes", []) if n.get("connected", True)]
+
+    # auto mode 只需第一層（coordinator 從中選用），graph mode 需全部 connected nodes
+    if mode == "auto":
+        first_layer_node_ids = {e["to"] for e in manifest.get("edges", []) if e["from"] == "root"}
+        skill_keys = list({n["skill_key"] for n in connected_nodes if n["node_id"] in first_layer_node_ids})
+    else:
+        first_layer_node_ids = set()
+        skill_keys = list({n["skill_key"] for n in connected_nodes})
+
     try:
         context_resp = await loop.run_in_executor(
             None, api.get_ai_agent_context_data, agent_key, client_id, skill_keys
@@ -577,8 +587,6 @@ async def run_agent(agent_key: str, request: Request):
         logger.warning("Agent '%s' context_data errors: %s", agent_key, errors)
 
     # 4. 執行
-    mode = manifest.get("orchestration_mode", "auto")
-
     try:
         if mode == "graph":
             result_or_gen = await run_graph(
@@ -588,10 +596,11 @@ async def run_agent(agent_key: str, request: Request):
                 stream=stream,
             )
         else:  # auto
-            # 把 manifest + skills_data 轉成 resolved_skills 格式
             seen_skills: set[str] = set()
             resolved_skills = []
-            for node in manifest.get("nodes", []):
+            for node in connected_nodes:
+                if node["node_id"] not in first_layer_node_ids:
+                    continue
                 sk = node["skill_key"]
                 if sk in seen_skills:
                     continue

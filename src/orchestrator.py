@@ -319,16 +319,17 @@ async def run_graph(
     Returns:
         str（非 streaming）或 async generator（streaming，只 stream 最終輸出）
     """
-    nodes: list[dict] = manifest.get("nodes", [])
+    nodes: list[dict] = [n for n in manifest.get("nodes", []) if n.get("connected", True)]
     edges: list[dict] = manifest.get("edges", [])
     node_skill: dict[str, str] = {n["node_id"]: n["skill_key"] for n in nodes}
     node_ids = set(node_skill.keys())
     layers = _topo_layers(node_ids, edges)
 
-    # 前驅 map：nid → [上游 nid]
+    # 前驅 map：nid → [上游 nid]（排除 root，root 只是拓撲起點，不產生輸出）
     pred: dict[str, list[str]] = defaultdict(list)
     for e in edges:
-        pred[e["to"]].append(e["from"])
+        if e["from"] != "root":
+            pred[e["to"]].append(e["from"])
 
     # 後繼 map（用來找 leaf nodes）
     has_successor = {e["from"] for e in edges if e["from"] in node_ids}
