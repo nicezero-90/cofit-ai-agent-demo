@@ -16,9 +16,9 @@ def _manifest(usable=True, mode="auto", blocked=None):
         "blocked_nodes": blocked or [],
         "nodes": [
             {"node_id": "n1", "skill_key": "daily_diet_summary", "name": "每日飲食摘要",
-             "status": "active", "position_x": 0, "position_y": 0},
+             "status": "active", "connected": True, "position_x": 0, "position_y": 0},
         ],
-        "edges": [],
+        "edges": [{"from": "root", "to": "n1"}],
         "system_prompt": "你是營養師",
         "model_config": {"model": "gemini-flash"},
         "tools": [],
@@ -124,6 +124,31 @@ def test_run_agent_auto_uses_node_name_as_description():
 
     # node["name"] == "每日飲食摘要"，不是 skill_key "daily_diet_summary"
     assert captured.get("descriptions") == ["每日飲食摘要"]
+
+
+def test_run_agent_orphan_nodes_excluded_from_context_fetch():
+    """connected: false 的 orphan 節點不應被送入 context_data 的 skill_keys。"""
+    manifest = _manifest(usable=True, mode="auto")
+    # 新增一個 orphan 節點（connected: false）
+    manifest["nodes"].append(
+        {"node_id": "n_orphan", "skill_key": "orphan_skill", "name": "Orphan",
+         "status": "active", "connected": False, "position_x": 500, "position_y": 500}
+    )
+    ctx = _context_data()
+
+    mock_api = MagicMock()
+    mock_api.get_ai_agent_manifest.return_value = manifest
+    mock_api.get_ai_agent_context_data.return_value = ctx
+
+    with patch("src.cofit_api_client.CofitApiClient", return_value=mock_api):
+        with patch("main.run_auto", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = "ok"
+            client.post("/v1/agents/nutrition-agent/run", json={"client_id": 351})
+
+    # context_data API 的 skill_keys 不應包含 orphan_skill
+    call_kwargs = mock_api.get_ai_agent_context_data.call_args
+    passed_skill_keys = call_kwargs[0][2] if call_kwargs[0] else call_kwargs[1].get("skill_keys", [])
+    assert "orphan_skill" not in (passed_skill_keys or [])
 
 
 def test_run_agent_null_model_config_does_not_crash():
