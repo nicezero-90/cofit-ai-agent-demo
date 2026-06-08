@@ -234,7 +234,7 @@ def create_orchestrator(
     raw_model = model_config.get("model", DEFAULT_MODEL)
     model = resolve_model(raw_model)
 
-    instruction = lambda _ctx, _t=system_prompt: _t
+    instruction = lambda _ctx, _t=(system_prompt or ""): _t
 
     agent = Agent(
         name=f"orchestrator_{skill_key.replace('-', '_')}",

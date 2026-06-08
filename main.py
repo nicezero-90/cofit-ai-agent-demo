@@ -620,7 +620,7 @@ async def run_agent(agent_key: str, request: Request):
                 })
             result_or_gen = await run_auto(
                 resolved_skills=resolved_skills,
-                system_prompt=manifest.get("system_prompt", ""),
+                system_prompt=manifest.get("system_prompt") or "",
                 model_config=manifest.get("model_config") or {},
                 skill_key=agent_key,
                 message=message,
