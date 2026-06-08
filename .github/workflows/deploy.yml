@@ -116,9 +116,12 @@ jobs:
           MAX_RETRIES=5
           RETRY_COUNT=0
           SUCCESS=false
+          TOKEN=$(gcloud auth print-identity-token)
 
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$SERVICE_URL/health" || echo "000")
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" \
+              "$SERVICE_URL/health" || echo "000")
             if [ "$HTTP_CODE" = "200" ]; then
               SUCCESS=true
               echo "Service is healthy!"
