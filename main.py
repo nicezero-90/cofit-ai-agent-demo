@@ -1,4 +1,4 @@
-# main.py — 診所 AI 大腦 POC
+# main.py — Clinic AI Brain POC
 import asyncio
 import json
 import logging
@@ -14,7 +14,11 @@ from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
 
+import requests as _requests
+
 from src.agent_factory import create_agent
+from src.cofit_api_client import CofitApiClient
+from src.constants import COFIT_API_URL, COFIT_TOKEN
 from src.orchestrator import resolve_skill_configs, run_auto, run_parallel, run_sequential, run_graph
 
 # ── Logging ──────────────────────────────────────────────
@@ -26,8 +30,8 @@ logging.root.setLevel(logging.INFO)
 
 # ── FastAPI App ──────────────────────────────────────────
 app = FastAPI(
-    title="診所 AI 大腦 POC",
-    description="BE 送完整 config，AI platform 建立 Gemini Agent 執行後回傳結果。",
+    title="Clinic AI Brain POC",
+    description="BE sends full config, AI platform creates and runs Gemini Agent, returns result.",
     version="0.1.0",
 )
 
@@ -72,7 +76,7 @@ async def run_brain_v2(
     skills: list[dict],
     stream: bool,
 ):
-    """v2 路徑：orchestrator + sub-agents。"""
+    """v2 path: orchestrator + sub-agents."""
     client_id = None
     if isinstance(context_data, dict):
         client_id = context_data.get("client_id")
@@ -103,22 +107,22 @@ async def run_brain_v2(
 @app.post(
     "/ai-brain",
     tags=["AI Brain"],
-    summary="AI 大腦（BE 直接呼叫，免認證）",
+    summary="AI Brain (BE direct call, no auth required)",
     description=(
-        "BE 送整包 config，AI platform 建立 Gemini Agent 執行後回傳結果。\n\n"
-        "**免認證** — BE 內部呼叫，不需帶任何 token。\n\n"
-        "**BE 呼叫範例：**\n"
+        "BE sends full config, AI platform creates and runs Gemini Agent, returns result.\n\n"
+        "**No auth required** — internal BE call, no token needed.\n\n"
+        "**BE call example:**\n"
         "```\n"
         "POST /ai-brain\n"
         "Content-Type: application/json\n\n"
         '{"key":"doctor_visit_initial","system_prompt":"...","model_config":{"model":"gemini-flash"},'
         '"tools":["google_search"],"rag_files":[...],"context_data":{...}}\n'
         "```\n\n"
-        "**回傳：**\n"
+        "**Response:**\n"
         "```json\n"
-        '{"result": "根據病人的報告...", "skill_key": "doctor_visit_initial"}\n'
+        '{"result": "Based on patient report...", "skill_key": "doctor_visit_initial"}\n'
         "```\n\n"
-        "**Streaming（`stream: true`）：** 回傳 SSE，每個 chunk 格式 `data: {\"text\": \"...\"}`，結束 `data: [DONE]`"
+        "**Streaming (`stream: true`):** Returns SSE, each chunk format `data: {\"text\": \"...\"}`, ends with `data: [DONE]`"
     ),
     openapi_extra={
         "requestBody": {
@@ -131,42 +135,42 @@ async def run_brain_v2(
                         "properties": {
                             "key": {
                                 "type": "string",
-                                "description": "Skill key（對應 BE ai_skills 設定）",
+                                "description": "Skill key (maps to BE ai_skills config)",
                                 "example": "doctor_visit_initial",
                             },
                             "system_prompt": {
                                 "type": "string",
-                                "description": "Agent 的系統 prompt（完整內容）",
-                                "example": "你是一名經驗豐富的醫師，具有專業的功能醫學知識...",
+                                "description": "Agent system prompt (full content)",
+                                "example": "You are an experienced physician with expertise in functional medicine...",
                             },
                             "model_config": {
                                 "type": "object",
-                                "description": "模型設定",
+                                "description": "Model configuration",
                                 "required": ["model"],
                                 "properties": {
                                     "model": {
                                         "type": "string",
-                                        "description": "模型別名：gemini-flash / gemini-flash-lite / gemini-pro",
+                                        "description": "Model alias: gemini-flash / gemini-flash-lite / gemini-pro",
                                         "example": "gemini-flash",
                                     },
                                 },
                             },
                             "tools": {
                                 "type": "array",
-                                "description": "啟用的工具（選填）",
+                                "description": "Enabled tools (optional)",
                                 "items": {"type": "string", "enum": ["google_search"]},
                                 "example": ["google_search"],
                             },
                             "rag_files": {
                                 "type": "array",
-                                "description": "知識庫檔案（選填）。rag_mode=full_context 會將檔案全文注入 context",
+                                "description": "Knowledge base files (optional). rag_mode=full_context injects full file content into context",
                                 "items": {
                                     "type": "object",
                                     "required": ["file_name", "url", "rag_mode"],
                                     "properties": {
                                         "file_name": {
                                             "type": "string",
-                                            "example": "初日診所營養品指南.json",
+                                            "example": "clinic_supplement_guide.json",
                                         },
                                         "url": {
                                             "type": "string",
@@ -186,12 +190,12 @@ async def run_brain_v2(
                             },
                             "rag_resource_name": {
                                 "type": "string",
-                                "description": "Vertex AI RAG corpus（選填）",
+                                "description": "Vertex AI RAG corpus (optional)",
                                 "example": "projects/78906692519/locations/asia-east1/ragCorpora/7665689515738005504",
                             },
                             "context_data": {
                                 "type": "object",
-                                "description": "客戶資料（JSON，注入 system prompt 的「參考資料」區段）",
+                                "description": "Client data (JSON, injected into the Reference Data section of system prompt)",
                                 "example": {
                                     "client": {
                                         "real_name": "Samuel QA_Test",
@@ -203,62 +207,62 @@ async def run_brain_v2(
                             },
                             "message": {
                                 "type": "string",
-                                "description": "使用者訊息（選填，預設「請根據資料產出分析報告」）",
-                                "example": "請根據這位病人的資料，產出初診諮詢稿",
+                                "description": "User message (optional, default: 'Please generate analysis report based on the data')",
+                                "example": "Please generate an initial consultation report based on this patient's data",
                             },
                             "stream": {
                                 "type": "boolean",
-                                "description": "SSE streaming 模式（預設 false）",
+                                "description": "SSE streaming mode (default false)",
                                 "default": False,
                             },
                             "skills": {
                                 "type": "array",
-                                "description": "Sub-agent 清單（選填，v2）。不傳則走 v1 單一 agent",
+                                "description": "Sub-agent list (optional, v2). If omitted, uses v1 single agent",
                                 "items": {
                                     "type": "object",
                                     "required": ["skill_key", "description"],
                                     "properties": {
                                         "skill_key": {
                                             "type": "string",
-                                            "description": "對應 BE /v5/ai_skills/:key",
+                                            "description": "Maps to BE /v5/ai_skills/:key",
                                             "example": "lab_report",
                                         },
                                         "description": {
                                             "type": "string",
-                                            "description": "給 orchestrator 判斷路由用",
-                                            "example": "分析檢驗報告數據，判斷異常值並給建議",
+                                            "description": "Used by orchestrator for routing decisions",
+                                            "example": "Analyze lab report data, identify abnormal values and provide recommendations",
                                         },
                                         "system_prompt": {
                                             "type": "string",
-                                            "description": "Inline 模式：skill 的 system prompt（選填，沒給就打 BE 拿）",
+                                            "description": "Inline mode: skill system prompt (optional, fetched from BE if not provided)",
                                         },
                                         "model_config": {
                                             "type": "object",
-                                            "description": "Inline 模式：model 設定（選填）",
+                                            "description": "Inline mode: model config (optional)",
                                         },
                                         "context_data": {
                                             "type": "object",
-                                            "description": "Inline 模式：context 資料（選填）",
+                                            "description": "Inline mode: context data (optional)",
                                         },
                                         "tools": {
                                             "type": "array",
-                                            "description": "Inline 模式：tools（選填）",
+                                            "description": "Inline mode: tools (optional)",
                                             "items": {"type": "string"},
                                         },
                                         "rag_files": {
                                             "type": "array",
-                                            "description": "Inline 模式：知識庫檔案（選填）",
+                                            "description": "Inline mode: knowledge base files (optional)",
                                         },
                                     },
                                 },
                                 "example": [
-                                    {"skill_key": "lab_report", "description": "分析檢驗報告數據"},
-                                    {"skill_key": "body_measurement", "description": "分析體組成變化趨勢"},
+                                    {"skill_key": "lab_report", "description": "Analyze lab report data"},
+                                    {"skill_key": "body_measurement", "description": "Analyze body composition trends"},
                                 ],
                             },
                             "orchestration_mode": {
                                 "type": "string",
-                                "description": "編排模式（選填，預設 auto）",
+                                "description": "Orchestration mode (optional, default: auto)",
                                 "enum": ["auto", "parallel", "sequential"],
                                 "default": "auto",
                             },
@@ -269,7 +273,7 @@ async def run_brain_v2(
         },
         "responses": {
             "200": {
-                "description": "執行成功",
+                "description": "Execution successful",
                 "content": {
                     "application/json": {
                         "schema": {
@@ -280,18 +284,18 @@ async def run_brain_v2(
                             },
                         },
                         "example": {
-                            "result": "Samuel，你好！根據您的檢測報告與問卷，我為您整理了以下建議...",
+                            "result": "Hi Samuel! Based on your test report and questionnaire, here are my recommendations...",
                             "skill_key": "doctor_visit_initial",
                         },
                     },
                     "text/event-stream": {
                         "schema": {"type": "string"},
-                        "example": 'data: {"text": "Samuel，你好！"}\ndata: {"text": "根據您的..."}\ndata: [DONE]\n',
+                        "example": 'data: {"text": "Hi Samuel!"}\ndata: {"text": "Based on your..."}\ndata: [DONE]\n',
                     },
                 },
             },
             "400": {
-                "description": "缺少必要欄位",
+                "description": "Missing required fields",
                 "content": {
                     "application/json": {
                         "example": {"error": "key, system_prompt, model_config, and context_data are required"},
@@ -299,7 +303,7 @@ async def run_brain_v2(
                 },
             },
             "500": {
-                "description": "Agent 執行失敗",
+                "description": "Agent execution failed",
                 "content": {
                     "application/json": {
                         "example": {"error": "Agent execution failed"},
@@ -320,7 +324,7 @@ async def ai_brain(request: Request):
     model_config = body.get("model_config", {})
     context_data = body.get("context_data", {})
     stream = body.get("stream", False)
-    message = body.get("message") or body.get("user_prompt") or "請根據資料產出分析報告"
+    message = body.get("message") or body.get("user_prompt") or "Please generate analysis report based on the data"
 
     if not skill_key or not system_prompt or not model_config:
         return JSONResponse(
@@ -328,7 +332,7 @@ async def ai_brain(request: Request):
             content={"error": "key, system_prompt, model_config, and context_data are required"},
         )
 
-    # ── v2：有 skills → 走 orchestrator ──
+    # ── v2: has skills → use orchestrator ──
     skills = body.get("skills") or []
     if skills:
         if stream:
@@ -359,8 +363,8 @@ async def ai_brain(request: Request):
                 logger.exception(f"Error in /ai-brain v2: {e}")
                 return JSONResponse(status_code=500, content={"error": "Agent execution failed"})
 
-    # ── v1：原有邏輯（無 skills）──
-    # 直接用 BE 送來的 config 建立 agent
+    # ── v1: original logic (no skills) ──
+    # Build agent directly from BE-provided config
     config = {
         "system_prompt": system_prompt,
         "model_config": model_config,
@@ -375,7 +379,7 @@ async def ai_brain(request: Request):
         skill_key=skill_key,
     )
 
-    # Session + Runner（stateless，每次建新 session）
+    # Session + Runner (stateless, new session each time)
     session_service = InMemorySessionService()
     app_name = f"brain_{skill_key}"
     user_id = "be_caller"
@@ -428,7 +432,7 @@ async def ai_brain(request: Request):
 
             result = "".join(full_text)
             if not result:
-                result = "抱歉，我無法產生回覆，請再試一次。"
+                result = "Sorry, I was unable to generate a response. Please try again."
         except Exception as e:
             logger.exception(f"Error in /ai-brain: {e}")
             return JSONResponse(status_code=500, content={"error": "Agent execution failed"})
@@ -442,13 +446,13 @@ async def ai_brain(request: Request):
 @app.post(
     "/v1/agents/{agent_key}/run",
     tags=["AI Agent"],
-    summary="AI Agent 執行（multi-skill 編排）",
+    summary="AI Agent execution (multi-skill orchestration)",
     description=(
-        "根據 BE 設定的 agent manifest，執行多 skill 編排流程。\n\n"
-        "**兩種模式：**\n"
-        "- `auto`: 把 agent + 所有 skill 丟給 coordinator LLM，由它自行決定呼叫哪些 skill\n"
-        "- `graph`: 照 edges 定義的有向圖執行，同層無相依者平行執行\n\n"
-        "**`usable == false` 時回傳 422**（agent 設定有問題，請通知後端）"
+        "Execute multi-skill orchestration flow based on agent manifest from BE.\n\n"
+        "**Two modes:**\n"
+        "- `auto`: pass agent + all skills to coordinator LLM, which decides which skills to call\n"
+        "- `graph`: execute directed graph defined by edges, same-layer nodes run in parallel\n\n"
+        "**Returns 422 when `usable == false`** (agent config has issues, notify backend)"
     ),
     openapi_extra={
         "requestBody": {
@@ -461,24 +465,24 @@ async def ai_brain(request: Request):
                         "properties": {
                             "client_id": {
                                 "type": "integer",
-                                "description": "用戶 ID",
+                                "description": "User ID",
                                 "example": 351,
                             },
                             "message": {
                                 "type": "string",
-                                "description": "使用者輸入（選填，預設「請根據資料產出分析報告」）",
-                                "example": "請幫我產出這位病人的完整分析報告",
+                                "description": "User input (optional, default: 'Please generate analysis report based on the data')",
+                                "example": "Please generate a comprehensive analysis report for this patient",
                             },
                             "stream": {
                                 "type": "boolean",
-                                "description": "SSE streaming 模式（預設 false）",
+                                "description": "SSE streaming mode (default false)",
                                 "default": False,
                             },
                         },
                     },
                     "example": {
                         "client_id": 351,
-                        "message": "請幫我產出完整分析報告",
+                        "message": "Please generate a comprehensive analysis report",
                         "stream": False,
                     },
                 }
@@ -486,25 +490,25 @@ async def ai_brain(request: Request):
         },
         "responses": {
             "200": {
-                "description": "執行成功",
+                "description": "Execution successful",
                 "content": {
                     "application/json": {
                         "example": {
-                            "result": "根據病人資料...",
+                            "result": "Based on patient data...",
                             "agent_key": "nutrition-agent",
                             "mode": "graph",
                         },
                     },
                     "text/event-stream": {
                         "schema": {"type": "string"},
-                        "example": 'data: {"text": "根據病人資料..."}\ndata: [DONE]\n',
+                        "example": 'data: {"text": "Based on patient data..."}\ndata: [DONE]\n',
                     },
                 },
             },
-            "400": {"description": "缺少 client_id"},
-            "404": {"description": "agent_key 不存在"},
+            "400": {"description": "Missing client_id"},
+            "404": {"description": "agent_key not found"},
             "422": {
-                "description": "Agent usable == false（skill 設定有問題）",
+                "description": "Agent usable == false (skill config has issues)",
                 "content": {
                     "application/json": {
                         "example": {
@@ -514,8 +518,8 @@ async def ai_brain(request: Request):
                     }
                 },
             },
-            "502": {"description": "上游 BE API 錯誤"},
-            "500": {"description": "Agent 執行失敗"},
+            "502": {"description": "Upstream BE API error"},
+            "500": {"description": "Agent execution failed"},
         },
     },
 )
@@ -530,14 +534,10 @@ async def run_agent(agent_key: str, request: Request):
         return JSONResponse(status_code=400, content={"error": "client_id is required"})
     client_id = int(client_id)
 
-    message = body.get("message") or "請根據資料產出分析報告"
+    message = body.get("message") or "Please generate analysis report based on the data"
     stream = body.get("stream", False)
 
-    # 1. 取 manifest（編排結構）
-    from src.cofit_api_client import CofitApiClient
-    from src.constants import COFIT_API_URL, COFIT_TOKEN
-    import requests as _requests
-
+    # 1. Fetch manifest (orchestration structure)
     api = CofitApiClient(base_url=COFIT_API_URL, token=COFIT_TOKEN)
     loop = asyncio.get_event_loop()
     try:
@@ -552,7 +552,7 @@ async def run_agent(agent_key: str, request: Request):
         logger.error("get_ai_agent_manifest error: %s", e)
         return JSONResponse(status_code=502, content={"error": "Upstream API error"})
 
-    # 2. usable == False → 停止
+    # 2. usable == False → stop
     if not manifest.get("usable", True):
         blocked = manifest.get("blocked_nodes") or []
         logger.warning("Agent '%s' is not usable, blocked_nodes: %s", agent_key, blocked)
@@ -561,11 +561,11 @@ async def run_agent(agent_key: str, request: Request):
             content={"error": "Agent has blocked nodes", "blocked_nodes": blocked},
         )
 
-    # 3. 批次取 skill 資料（connected: false 為 orphan，預設 True 保持向後相容）
+    # 3. Batch fetch skill data (connected: false = orphan node, default True for backward compatibility)
     mode = manifest.get("orchestration_mode", "auto")
     connected_nodes = [n for n in manifest.get("nodes", []) if n.get("connected", True)]
 
-    # auto mode 只需第一層（coordinator 從中選用），graph mode 需全部 connected nodes
+    # auto mode only needs first layer (coordinator selects from them), graph mode needs all connected nodes
     if mode == "auto":
         first_layer_node_ids = {e["to"] for e in manifest.get("edges", []) if e["from"] == "root"}
         skill_keys = list({n["skill_key"] for n in connected_nodes if n["node_id"] in first_layer_node_ids})
@@ -586,7 +586,7 @@ async def run_agent(agent_key: str, request: Request):
     if errors:
         logger.warning("Agent '%s' context_data errors: %s", agent_key, errors)
 
-    # 4. 執行
+    # 4. Execute
     try:
         if mode == "graph":
             result_or_gen = await run_graph(

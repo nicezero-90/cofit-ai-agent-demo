@@ -1,20 +1,20 @@
-"""精簡版 agent_factory — 僅保留 AI Brain POC 所需邏輯。
+"""Minimal agent_factory — keeps only logic needed for AI Brain POC.
 
-從 ai-skill-platform/src/agent_factory.py clone，移除：
-- NutriGO / diet 相關 tool
+Cloned from ai-skill-platform/src/agent_factory.py, removed:
+- NutriGO / diet related tools
 - RemoteA2aAgent (A2A sub-agent)
 - preload_memory_tool
-保留：
+Kept:
 - GoogleSearchToolCompat
 - VertexRagTool
-- full_context 知識庫注入
-- model alias 解析
+- full_context knowledge base injection
+- model alias resolution
 """
 
 import json
 import logging
 import mimetypes
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from google.adk.agents import Agent
 from google.adk.tools.base_tool import BaseTool
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 
-# BE model alias → 實際 Gemini model ID
+# BE model alias → actual Gemini model ID
 MODEL_ALIAS = {
     "gemini-flash": "gemini-3-flash-preview",
     "gemini-flash-lite": "gemini-3.1-flash-lite-preview",
@@ -38,12 +38,12 @@ MODEL_ALIAS = {
 
 
 def resolve_model(alias: str) -> str:
-    """將 BE 回傳的 model alias 解析為實際 model ID。"""
+    """Resolve BE model alias to actual model ID."""
     return MODEL_ALIAS.get(alias, alias)
 
 
 class GoogleSearchToolCompat(BaseTool):
-    """Google Search tool，支援所有 Gemini model（ADK 內建版只支援 1.x/2.x）。"""
+    """Google Search tool, supports all Gemini models (ADK built-in only supports 1.x/2.x)."""
 
     def __init__(self):
         super().__init__(name="google_search", description="google_search")
@@ -59,11 +59,7 @@ class GoogleSearchToolCompat(BaseTool):
 
 
 class VertexRagTool(BaseTool):
-    """ADK tool：Vertex AI RAG Engine 知識庫檢索。
-
-    - gemini-2 model → built-in retrieval tool
-    - 其他 model → rag.retrieval_query 獨立查詢
-    """
+    """ADK tool: Vertex AI RAG Engine knowledge base retrieval using built-in retrieval."""
 
     def __init__(
         self,
@@ -73,7 +69,7 @@ class VertexRagTool(BaseTool):
     ):
         super().__init__(
             name="rag_retrieval",
-            description="從知識庫檢索相關營養與飲食資料",
+            description="Retrieve relevant nutrition and diet data from knowledge base",
         )
         self.rag_resources = [rag.RagResource(rag_corpus=rag_resource_name)]
         self.vertex_rag_store = types.VertexRagStore(
@@ -89,38 +85,19 @@ class VertexRagTool(BaseTool):
     async def process_llm_request(
         self, *, tool_context: ToolContext, llm_request: "LlmRequest"
     ) -> None:
-        if llm_request.model and llm_request.model.startswith("gemini-2"):
-            llm_request.config = llm_request.config or types.GenerateContentConfig()
-            llm_request.config.tools = llm_request.config.tools or []
-            llm_request.config.tools.append(
-                types.Tool(
-                    retrieval=types.Retrieval(
-                        vertex_rag_store=self.vertex_rag_store
-                    )
+        llm_request.config = llm_request.config or types.GenerateContentConfig()
+        llm_request.config.tools = llm_request.config.tools or []
+        llm_request.config.tools.append(
+            types.Tool(
+                retrieval=types.Retrieval(
+                    vertex_rag_store=self.vertex_rag_store
                 )
             )
-        else:
-            await super().process_llm_request(
-                tool_context=tool_context, llm_request=llm_request
-            )
-
-    async def run_async(
-        self, *, args: dict[str, Any], tool_context: ToolContext
-    ) -> Any:
-        """非 gemini-2 model 時，用 rag.retrieval_query 獨立查詢。"""
-        response = rag.retrieval_query(
-            text=args["query"],
-            rag_resources=self.rag_resources,
-            similarity_top_k=self.similarity_top_k,
-            vector_distance_threshold=self.vector_distance_threshold,
         )
-        if not response.contexts.contexts:
-            return "No matching result found in knowledge base."
-        return [ctx.text for ctx in response.contexts.contexts]
 
 
 def _guess_mime_type(file_name: str) -> str:
-    """根據副檔名推斷 MIME type，預設 application/pdf。"""
+    """Infer MIME type from file extension, default application/pdf."""
     mime, _ = mimetypes.guess_type(file_name)
     if not mime:
         return "application/pdf"
@@ -130,7 +107,7 @@ def _guess_mime_type(file_name: str) -> str:
 
 
 def _build_knowledge_parts(rag_files: list[dict]) -> list[types.Part]:
-    """full_context 模式：將 rag_files 的檔案 URL 轉成 file_data Parts。"""
+    """full_context mode: convert rag_files file URLs into file_data Parts."""
     parts = []
     for f in rag_files:
         url = f.get("url") or f.get("gcs_uri", "")
@@ -157,14 +134,14 @@ def create_agent(
     context_data: dict,
     skill_key: str,
 ) -> tuple[Agent, list[types.Part]]:
-    """根據 BE 設定和 context_data 動態建立 ADK Agent。
+    """Dynamically create an ADK Agent from BE config and context_data.
 
     Returns:
-        (agent, knowledge_parts): agent 和 full_context 模式的知識庫 Parts。
+        (agent, knowledge_parts): agent and knowledge base Parts for full_context mode.
     """
     system_prompt = config.get("system_prompt", "")
     context_json = json.dumps(context_data, ensure_ascii=False, indent=2)
-    instruction_text = f"{system_prompt}\n\n## 參考資料\n{context_json}"
+    instruction_text = f"{system_prompt}\n\n## Reference Data\n{context_json}"
     # Use callable to bypass ADK template variable injection
     instruction = lambda _ctx, _t=instruction_text: _t
 
@@ -178,7 +155,7 @@ def create_agent(
     all_tool_names = config.get("tools") or []
     tools = []
 
-    # 知識庫
+    # Knowledge base
     rag_resource_name = config.get("rag_resource_name")
     rag_files = config.get("rag_files") or []
     knowledge_parts: list[types.Part] = []
@@ -192,7 +169,7 @@ def create_agent(
 
     generate_content_config = types.GenerateContentConfig()
 
-    # Gemini 原生 tools
+    # Gemini native tools
     if "google_search" in all_tool_names:
         tools.append(GoogleSearchToolCompat())
 
@@ -217,13 +194,13 @@ def create_orchestrator(
     sub_agents: list[Agent],
     skill_key: str,
 ) -> Agent:
-    """建立 orchestrator Agent，掛載 sub_agents 做編排。
+    """Create an orchestrator Agent with sub_agents for routing.
 
     Args:
-        system_prompt: orchestrator 的 system prompt（只管路由，不管分析）
-        model_config: orchestrator 的 model 設定（通常用 gemini-pro）
-        sub_agents: 已建好的 skill Agent 清單
-        skill_key: 頂層 skill key（用於命名）
+        system_prompt: orchestrator system prompt (routing only, not analysis)
+        model_config: orchestrator model config (typically gemini-pro)
+        sub_agents: list of already-created skill Agents
+        skill_key: top-level skill key (used for naming)
 
     Returns:
         orchestrator Agent
