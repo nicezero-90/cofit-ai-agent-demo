@@ -1,9 +1,9 @@
-"""Orchestrator — AI Brain A2A 編排層。
+"""Orchestrator — AI Brain A2A orchestration layer.
 
-負責：
-1. resolve_skill_configs: 解析 skills[]，inline 或打 BE
-2. run_auto / run_parallel / run_sequential: 三種編排模式
-3. run_graph: graph 模式（依 DAG edges 拓撲排序執行）
+Responsibilities:
+1. resolve_skill_configs: resolve skills[], use inline or fetch from BE
+2. run_auto / run_parallel / run_sequential: three orchestration modes
+3. run_graph: graph mode (topological sort execution via DAG edges)
 """
 
 import asyncio
@@ -37,13 +37,13 @@ async def resolve_skill_configs(
     skills: list[dict],
     client_id: int | None,
 ) -> list[dict]:
-    """解析 skills[]，inline 有 system_prompt 就直接用，否則打 BE。
+    """Resolve skills[]: use inline system_prompt directly, otherwise fetch from BE.
 
-    回傳格式:
+    Returns:
     [
         {
             "skill_key": "lab_report",
-            "description": "分析檢驗報告",
+            "description": "Analyze lab report",
             "config": {"system_prompt": "...", "model_config": {...}, "tools": [], "rag_files": []},
             "context_data": {...},
         },
@@ -110,7 +110,7 @@ def _extract_text_from_event(event) -> str:
 
 
 def _build_sub_agents(resolved_skills: list[dict]) -> tuple[list, list[types.Part]]:
-    """從 resolved_skills 建立 sub-agent 清單。
+    """Build sub-agent list from resolved_skills.
 
     Returns:
         (sub_agents, all_knowledge_parts)
@@ -136,10 +136,10 @@ async def run_auto(
     message: str,
     stream: bool = False,
 ):
-    """auto 模式：建立 orchestrator + sub_agents，讓 ADK 自動路由。
+    """auto mode: create orchestrator + sub_agents, let ADK route automatically.
 
     Returns:
-        str（非 streaming）或 async generator（streaming）
+        str (non-streaming) or async generator (streaming)
     """
     sub_agents, knowledge_parts = _build_sub_agents(resolved_skills)
 
@@ -166,7 +166,7 @@ async def run_auto(
 
 
 async def _collect_runner(runner, user_id: str, session_id: str, user_content) -> str:
-    """跑 runner 並收集完整文字結果。"""
+    """Run runner and collect full text result."""
     full_text = []
     async for event in runner.run_async(
         user_id=user_id,
@@ -177,11 +177,11 @@ async def _collect_runner(runner, user_id: str, session_id: str, user_content) -
         text = _extract_text_from_event(event)
         if text:
             full_text.append(text)
-    return "".join(full_text) or "抱歉，我無法產生回覆，請再試一次。"
+    return "".join(full_text) or "Sorry, I was unable to generate a response. Please try again."
 
 
 async def _stream_runner(runner, user_id: str, session_id: str, user_content):
-    """跑 runner 並 yield SSE chunks。"""
+    """Run runner and yield SSE chunks."""
     async for event in runner.run_async(
         user_id=user_id,
         session_id=session_id,
@@ -201,7 +201,7 @@ async def _run_single_agent(
     skill_key: str,
     message: str,
 ) -> tuple[str, str]:
-    """跑單一 skill agent，回傳 (skill_key, result)。"""
+    """Run a single skill agent, returns (skill_key, result)."""
     try:
         agent, knowledge_parts = create_agent(
             config=config, context_data=context_data, skill_key=skill_key,
@@ -219,7 +219,7 @@ async def _run_single_agent(
         return skill_key, result
     except Exception as e:
         logger.warning(f"Sub-agent '{skill_key}' failed: {e}")
-        return skill_key, f"[錯誤] {skill_key} 執行失敗: {e}"
+        return skill_key, f"[Error] {skill_key} execution failed: {e}"
 
 
 async def run_parallel(
@@ -230,8 +230,8 @@ async def run_parallel(
     message: str,
     stream: bool = False,
 ):
-    """parallel 模式：同時跑所有 sub-agent，orchestrator 彙整。"""
-    # 1. 並行跑所有 sub-agent
+    """parallel mode: run all sub-agents concurrently, orchestrator aggregates results."""
+    # 1. Run all sub-agents in parallel
     tasks = [
         _run_single_agent(
             config=s["config"],
@@ -243,18 +243,18 @@ async def run_parallel(
     ]
     results = await asyncio.gather(*tasks)
 
-    # 2. 組 summary prompt
+    # 2. Build summary prompt
     summary_parts = []
     for sk, result_text in results:
         desc = next((s["description"] for s in resolved_skills if s["skill_key"] == sk), sk)
-        summary_parts.append(f"### {desc}（{sk}）\n{result_text}")
+        summary_parts.append(f"### {desc} ({sk})\n{result_text}")
     summary = "\n\n".join(summary_parts)
 
     summarize_prompt = (
-        f"以下是各專家的分析結果，請彙整成一份完整報告：\n\n{summary}"
+        f"The following are analysis results from each expert. Please compile them into a comprehensive report:\n\n{summary}"
     )
 
-    # 3. Orchestrator 彙整（不需要 sub_agents，直接用單一 agent）
+    # 3. Orchestrator aggregates (no sub_agents needed, use single agent directly)
     summarize_config = {
         "system_prompt": system_prompt,
         "model_config": model_config,
@@ -279,7 +279,7 @@ async def run_parallel(
 
 
 def _topo_layers(node_ids: set[str], edges: list[dict]) -> list[list[str]]:
-    """Kahn's BFS — 回傳平行執行層（同層無相依，可平行；上層全完才跑下層）。"""
+    """Kahn's BFS — returns parallel execution layers (same layer has no deps; lower layers run after upper layers complete)."""
     in_deg = {nid: 0 for nid in node_ids}
     succ: dict[str, list[str]] = defaultdict(list)
     for e in edges:
@@ -307,17 +307,17 @@ async def run_graph(
     message: str,
     stream: bool = False,
 ):
-    """graph 模式：依 manifest edges 拓撲排序，同層平行執行，下游得到上游輸出。
+    """graph mode: topological sort by manifest edges, same layer runs in parallel, downstream receives upstream output.
 
     Args:
-        manifest: GET /v5/ai_agents/:key 的回傳（含 nodes / edges）
-        skills_data: GET /v5/ai_agents/:key/context_data 的 skills dict
+        manifest: response from GET /v5/ai_agents/:key (contains nodes / edges)
+        skills_data: skills dict from GET /v5/ai_agents/:key/context_data
                      {skill_key: {system_prompt, model_config, tools, context_data, ...}}
-        message: 使用者輸入
-        stream: 是否 streaming（graph 模式 streaming = 最後輸出 stream）
+        message: user input
+        stream: whether to stream (graph mode streaming = stream final output only)
 
     Returns:
-        str（非 streaming）或 async generator（streaming，只 stream 最終輸出）
+        str (non-streaming) or async generator (streaming, only streams final output)
     """
     nodes: list[dict] = [n for n in manifest.get("nodes", []) if n.get("connected", True)]
     edges: list[dict] = manifest.get("edges", [])
@@ -325,13 +325,13 @@ async def run_graph(
     node_ids = set(node_skill.keys())
     layers = _topo_layers(node_ids, edges)
 
-    # 前驅 map：nid → [上游 nid]（排除 root，root 只是拓撲起點，不產生輸出）
+    # predecessor map: nid → [upstream nid] (exclude root, root is only a topological entry point with no output)
     pred: dict[str, list[str]] = defaultdict(list)
     for e in edges:
         if e["from"] != "root":
             pred[e["to"]].append(e["from"])
 
-    # 後繼 map（用來找 leaf nodes）
+    # successor map (used to find leaf nodes)
     has_successor = {e["from"] for e in edges if e["from"] in node_ids}
     leaf_nodes = [nid for nid in node_ids if nid not in has_successor]
 
@@ -351,12 +351,12 @@ async def run_graph(
             }
             context_data = skill_data.get("context_data", {})
 
-            # 組 input：原始訊息 + 上游輸出
+            # Build input: original message + upstream outputs
             upstream_texts = [outputs[p] for p in pred[nid] if p in outputs]
             if upstream_texts:
                 node_input = (
-                    f"## 上游分析結果\n{chr(10).join(upstream_texts)}\n\n"
-                    f"## 使用者輸入\n{message}"
+                    f"## Upstream Analysis Results\n{chr(10).join(upstream_texts)}\n\n"
+                    f"## User Input\n{message}"
                 )
             else:
                 node_input = message
@@ -375,14 +375,14 @@ async def run_graph(
             nid = layer[i]
             if isinstance(result, Exception):
                 logger.error("Graph: node %s failed: %s", nid, result)
-                outputs[nid] = f"[{nid} 執行失敗: {result}]"
+                outputs[nid] = f"[{nid} execution failed: {result}]"
             else:
                 _, text = result
                 outputs[nid] = text
 
-    # 最終輸出：leaf nodes 的結果合併
+    # Final output: merge results from leaf nodes
     final_parts = [outputs.get(nid, "") for nid in leaf_nodes if outputs.get(nid)]
-    final_text = "\n\n".join(final_parts) or "抱歉，我無法產生回覆，請再試一次。"
+    final_text = "\n\n".join(final_parts) or "Sorry, I was unable to generate a response. Please try again."
 
     if stream:
         async def _gen():
@@ -400,16 +400,16 @@ async def run_sequential(
     message: str,
     stream: bool = False,
 ):
-    """sequential 模式：依序執行，前一步結果串接到下一步。"""
+    """sequential mode: execute in order, chain previous result into next step."""
     accumulated_context = ""
 
     for i, skill in enumerate(resolved_skills):
-        # 組合 message：原始問題 + 前面步驟的結果
+        # Build message: original question + results from previous steps
         if accumulated_context:
             step_message = (
-                f"原始問題：{message}\n\n"
-                f"前面步驟的分析結果：\n{accumulated_context}\n\n"
-                f"請根據以上資訊繼續分析。"
+                f"Original question: {message}\n\n"
+                f"Analysis results from previous steps:\n{accumulated_context}\n\n"
+                f"Please continue the analysis based on the above information."
             )
         else:
             step_message = message
@@ -422,12 +422,12 @@ async def run_sequential(
         )
 
         desc = skill.get("description", sk)
-        accumulated_context += f"\n### {desc}（{sk}）\n{result_text}\n"
+        accumulated_context += f"\n### {desc} ({sk})\n{result_text}\n"
 
-    # 最後 orchestrator 彙整
+    # Final orchestrator aggregation
     summarize_prompt = (
-        f"原始問題：{message}\n\n"
-        f"以下是各專家依序分析的結果，請彙整成一份完整報告：\n{accumulated_context}"
+        f"Original question: {message}\n\n"
+        f"The following are sequential analysis results from each expert. Please compile them into a comprehensive report:\n{accumulated_context}"
     )
 
     summarize_config = {

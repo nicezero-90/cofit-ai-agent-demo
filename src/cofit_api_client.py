@@ -36,10 +36,10 @@ class CofitApiClient:
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
     ) -> tuple[Dict[str, Any], Dict[str, Any]]:
-        """取得 skill config + context data（一次 API call）。
+        """Fetch skill config + context data (single API call).
 
         GET /v5/ai_skills/:skill_key/context_data?client_id=xxx
-        回傳: (config, context_data)
+        Returns: (config, context_data)
         """
         url = f"{self.base_url}/v5/ai_skills/{skill_key}/context_data"
         params: Dict[str, Any] = {"client_id": client_id}
@@ -54,10 +54,10 @@ class CofitApiClient:
         return data, context_data
 
     def get_ai_agent_manifest(self, agent_key: str) -> Dict[str, Any]:
-        """取得 agent 編排結構（不含 client 資料）。
+        """Fetch agent orchestration structure (without client data).
 
         GET /v5/ai_agents/:key
-        回傳: {key, orchestration_mode, nodes, edges, blocked_nodes, system_prompt, ...}
+        Returns: {key, orchestration_mode, nodes, edges, blocked_nodes, system_prompt, ...}
         """
         url = f"{self.base_url}/v5/ai_agents/{agent_key}"
         response = self.session.get(url, timeout=15)
@@ -70,10 +70,10 @@ class CofitApiClient:
         client_id: int,
         skill_keys: Optional[list] = None,
     ) -> Dict[str, Any]:
-        """批次取 skill config + client 資料。
+        """Batch fetch skill config + client data.
 
         GET /v5/ai_agents/:key/context_data?client_id=X&skill_keys[]=skill_b&...
-        回傳: {skills: {skill_key: {...}}, errors: {}}
+        Returns: {skills: {skill_key: {...}}, errors: {}}
         """
         url = f"{self.base_url}/v5/ai_agents/{agent_key}/context_data"
         params: Dict[str, Any] = {"client_id": client_id}
