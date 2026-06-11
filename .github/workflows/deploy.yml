@@ -107,6 +107,15 @@ jobs:
 
           echo "url=$SERVICE_URL" >> $GITHUB_OUTPUT
 
+      - name: Allow unauthenticated access (CORS fix)
+        run: |
+          gcloud run services add-iam-policy-binding $SERVICE_NAME \
+            --project=$PROJECT_ID \
+            --region=$REGION \
+            --member=allUsers \
+            --role=roles/run.invoker || \
+          echo "Warning: could not set IAM policy (SA may lack setIamPolicy permission — set manually in Cloud Console)"
+
       - name: Health check
         run: |
           SERVICE_URL="${{ steps.deploy.outputs.url }}"
